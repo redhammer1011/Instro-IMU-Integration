@@ -9,7 +9,6 @@ This looks at the packets that made it through and asks what *they* say:
 
 from collections import deque
 
-PACKET_PERIOD_MS = 10  # the board sends at 100 Hz
 SILENCE_S = 0.5  # no packets for this long counts as "link silent"
 
 
