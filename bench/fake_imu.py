@@ -43,8 +43,10 @@ class FakeImu:
         self._reader_lock = threading.Lock()
 
     def start(self):
+        # Open the port here, not in the thread, so it's already listening when start() returns.
+        server = socket.create_server(("127.0.0.1", self.port))
         threading.Thread(target=self._run, daemon=True).start()
-        threading.Thread(target=self._accept_readers, daemon=True).start()
+        threading.Thread(target=self._accept_readers, args=(server,), daemon=True).start()
 
     def stop(self):
         self._stop.set()
@@ -61,9 +63,8 @@ class FakeImu:
     def packets_since_boot(self):
         return self._seq
 
-    def _accept_readers(self):
+    def _accept_readers(self, server):
         """Plug a reader into the 'cable'. One at a time, like a real UART; the newest one wins."""
-        server = socket.create_server(("127.0.0.1", self.port))
         server.settimeout(0.5)
         while not self._stop.is_set():
             try:

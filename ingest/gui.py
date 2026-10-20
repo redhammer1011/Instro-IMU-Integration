@@ -1,6 +1,7 @@
 """Live bench monitor: IMU plots, supply readings, link health, and diagnosed events in one window.
 
-    python -m ingest.gui              (start the bench first: python -m bench.run_bench)
+    python -m ingest.gui --simulate   (runs the simulated bench too, with fault-injection controls)
+    python -m ingest.gui              (connects to a bench that's already running, simulated or real)
 """
 
 import argparse
@@ -69,10 +70,12 @@ class PlotBuffer:
 
 
 class Monitor(QtWidgets.QMainWindow):
-    def __init__(self, session, buffer):
+    def __init__(self, session, buffer, bench=None):
+        """bench: a SimulatedBench running in this program, to show fault-injection controls for."""
         super().__init__()
         self.session = session
         self.buffer = buffer
+        self.bench = bench
         self._events_shown = 0
         self._error_history = deque()  # (time, total errors) to spot errors in the last second
 
@@ -158,11 +161,13 @@ class Monitor(QtWidgets.QMainWindow):
 
         layout.addWidget(QtWidgets.QLabel("<b>Bench supply</b>"))
         buttons = QtWidgets.QHBoxLayout()
-        for text, volts in (("Drop to 4.3 V", 4.3), ("Restore 5.0 V", 5.0)):
+        for text, volts in (("Drop to 4.3 V", 4.3), ("Marginal 4.6 V", 4.6), ("Restore 5.0 V", 5.0)):
             button = QtWidgets.QPushButton(text)
             button.clicked.connect(lambda checked=False, v=volts: self.set_supply(v))
             buttons.addWidget(button)
         layout.addLayout(buttons)
+        if self.bench is not None:
+            layout.addWidget(self._build_fault_panel())
 
         layout.addWidget(QtWidgets.QLabel("<b>Events</b> (newest first)"))
         self._events = QtWidgets.QListWidget()
@@ -174,6 +179,24 @@ class Monitor(QtWidgets.QMainWindow):
         recording.setStyleSheet(f"color: {INK_2};")
         layout.addWidget(recording)
         return panel
+
+    def _build_fault_panel(self):
+        """Controls that make the simulated hardware misbehave. The monitor never reads these: it
+        has to work out what happened from the data, the same as it would on a real bench."""
+        box = QtWidgets.QGroupBox("Simulated bench: fault injection")
+        layout = QtWidgets.QVBoxLayout(box)
+        imu = self.bench.imu
+
+        bad_cable = QtWidgets.QCheckBox("Bad cable (garbage, lost bytes, bit flips)")
+        bad_cable.toggled.connect(lambda on: setattr(imu, "bad_cable", on))
+        unplugged = QtWidgets.QCheckBox("Serial cable unplugged (board keeps running)")
+        unplugged.toggled.connect(lambda on: setattr(imu, "cable_unplugged", on))
+        crash = QtWidgets.QPushButton("Firmware crash (reboot with healthy power)")
+        crash.clicked.connect(imu.reboot)
+
+        for widget in (bad_cable, unplugged, crash):
+            layout.addWidget(widget)
+        return box
 
     # ---- live updates --------------------------------------------------------------------
 
@@ -227,19 +250,28 @@ class Monitor(QtWidgets.QMainWindow):
     def closeEvent(self, event):
         self._timer.stop()
         self.session.close()
+        if self.bench is not None:
+            self.bench.stop()
         super().closeEvent(event)
 
 
 def main():
     args = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     add_connection_options(args)
+    args.add_argument("--simulate", action="store_true", help="also run the simulated bench in this window")
     options = args.parse_args()
+
+    bench = None
+    if options.simulate:
+        from bench.run_bench import SimulatedBench
+
+        bench = SimulatedBench()  # must be listening before the monitor connects to it
 
     app = QtWidgets.QApplication(sys.argv[:1])
     buffer = PlotBuffer()
     session = Session(options.imu, options.psu, options.out, extra_publishers=[buffer])
     session.start()
-    window = Monitor(session, buffer)
+    window = Monitor(session, buffer, bench)
     window.show()
     sys.exit(app.exec())
 

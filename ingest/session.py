@@ -13,7 +13,12 @@ from ingest.instrument import SerialTelemetry
 def add_connection_options(parser):
     parser.add_argument("--imu", default="socket://127.0.0.1:7000", help="serial port or URL of the IMU board")
     parser.add_argument("--psu", default="TCPIP0::127.0.0.1::5025::SOCKET", help="VISA address of the bench supply")
-    parser.add_argument("--out", type=Path, default=Path("runs") / datetime.now().strftime("%Y%m%d-%H%M%S"))
+    parser.add_argument(
+        "--out",
+        type=Path,
+        default=Path("runs") / datetime.now().strftime("%Y%m%d-%H%M%S"),
+        help="folder to save the recording in (default: runs/<date-time>)",
+    )
 
 
 class Session:

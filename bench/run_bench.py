@@ -62,17 +62,37 @@ def status(server, imu):
     return f"supply set {setpoint:.2f} V | board sees {volts:.3f} V, {amps * 1000:.0f} mA | board {board} | cable {cable}"
 
 
+class SimulatedBench:
+    """The whole simulated bench: Instro's supply powering the fake IMU. Used here and by the GUI."""
+
+    def __init__(self):
+        self.server = start_power_supply()
+        self.imu = FakeImu(
+            get_supply_voltage=lambda: board_voltage(self.server),
+            set_current_draw=lambda amps: set_board_current(self.server, amps),
+        )
+        self.imu.start()
+
+    def set_voltage(self, volts):
+        """Turn the supply's knob directly (the ingester normally does this through Instro instead)."""
+        with self.server.lock:
+            self.server.psu.process_scpi_command(f":SOUR1:VOLT {volts:.3f}")
+
+    def status(self):
+        return status(self.server, self.imu)
+
+    def stop(self):
+        self.imu.stop()
+        self.server.shutdown()
+
+
 def main():
-    server = start_power_supply()
-    imu = FakeImu(
-        get_supply_voltage=lambda: board_voltage(server),
-        set_current_draw=lambda amps: set_board_current(server, amps),
-    )
-    imu.start()
+    bench = SimulatedBench()
+    imu = bench.imu
     print(__doc__)
     print(f"Power supply (SCPI): TCPIP0::127.0.0.1::{PSU_PORT}::SOCKET")
     print("IMU serial stream:   socket://127.0.0.1:7000")
-    print(status(server, imu))
+    print(bench.status())
 
     try:
         while True:
@@ -89,19 +109,16 @@ def main():
                 imu.reboot()
                 print("board rebooted")
             elif command.startswith("v "):
-                volts = float(command.split()[1])
-                with server.lock:
-                    server.psu.process_scpi_command(f":SOUR1:VOLT {volts:.3f}")
-                print(status(server, imu))
+                bench.set_voltage(float(command.split()[1]))
+                print(bench.status())
             elif command == "s":
-                print(status(server, imu))
+                print(bench.status())
             elif command:
                 print("commands: b, u, r, v <volts>, s, q")
     except (KeyboardInterrupt, EOFError):
         pass
     finally:
-        imu.stop()
-        server.shutdown()
+        bench.stop()
 
 
 if __name__ == "__main__":
