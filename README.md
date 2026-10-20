@@ -2,7 +2,10 @@
 
 Stream binary UART telemetry from a board into [Instro](https://github.com/nominal-io/instro), alongside your bench instruments.
 
-![Bench monitor showing a brownout and an unplugged serial cable](docs/gui.png)
+Bench monitor showing a brownout and an unplugged serial cable:
+
+https://github.com/user-attachments/assets/019edbfd-5a00-41bb-a602-da59782a7b95
+
 
 Instro gives you one Python API for test equipment like power supplies, DMMs, and DAQs. This project covers the other side of the bench: the device under test sending its own telemetry over a serial port. It decodes the stream, keeps track of link health (CRC errors, dropped packets, reboots), and records everything through Instro's publishers on the same timeline as the bench power supply. Because it can see both, it can also tell you why the data stopped: a brownout, a firmware reset, or just an unplugged cable.
 
