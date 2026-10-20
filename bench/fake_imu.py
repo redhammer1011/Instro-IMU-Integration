@@ -6,6 +6,7 @@ a COM port, so the ingester's code is the same as it would be for a real board.
 The board is powered by a (simulated) bench supply:
 - below BROWNOUT_V it stops running, and when power returns it boots from scratch (seq resets to 0)
 - below MARGINAL_V it still runs, but its sensor readings get noisy
+- its current draw follows what it's doing: ~100 mA running, a 200 mA spike while booting, ~5 mA off
 """
 
 import math
@@ -20,13 +21,20 @@ PORT = 7000
 RATE_HZ = 100
 BROWNOUT_V = 4.5
 MARGINAL_V = 4.75
+RUN_CURRENT_A = 0.100
+BOOT_CURRENT_A = 0.200  # chips powering up and initializing draw extra for a moment
+BOOT_TIME_S = 0.1
+OFF_CURRENT_A = 0.005  # browned out: only leakage
 
 
 class FakeImu:
-    def __init__(self, get_supply_voltage, port=PORT):
+    def __init__(self, get_supply_voltage, set_current_draw=None, port=PORT):
         self.get_supply_voltage = get_supply_voltage
+        self.set_current_draw = set_current_draw  # tells the bench how much current the board pulls
         self.port = port
         self.bad_cable = False
+        self.cable_unplugged = False
+        self._current_draw = None
         self._seq = 0
         self._boot_time = time.monotonic()
         self._powered = True
@@ -82,6 +90,8 @@ class FakeImu:
                 self._reader.close()
 
     def _transmit(self, packet):
+        if self.cable_unplugged:
+            return  # the board keeps sending, but the wire isn't connected to anything
         with self._reader_lock:
             if self._reader is None:
                 return  # nobody is listening: the bytes just go nowhere
@@ -95,13 +105,22 @@ class FakeImu:
         volts = self.get_supply_voltage()
         if volts < BROWNOUT_V:
             self._powered = False
+            self._draw(OFF_CURRENT_A)
             return None
         if not self._powered:
             self._powered = True
             self.reboot()
+        booting = time.monotonic() - self._boot_time < BOOT_TIME_S
+        self._draw(BOOT_CURRENT_A if booting else RUN_CURRENT_A)
         sample = self._read_sensors(noisy=volts < MARGINAL_V)
         self._seq += 1
         return encode(sample)
+
+    def _draw(self, amps):
+        """Tell the bench how much current the board is pulling, only when it changes."""
+        if amps != self._current_draw and self.set_current_draw is not None:
+            self.set_current_draw(amps)
+        self._current_draw = amps
 
     def _read_sensors(self, noisy):
         t = time.monotonic() - self._boot_time

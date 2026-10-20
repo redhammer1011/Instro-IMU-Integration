@@ -3,7 +3,7 @@
 Follows Instro's custom-instrument pattern (examples/custom/simple_temp_controller.py):
 subclass Instrument, do the work in a background daemon function, and publish Measurements.
 Whatever publishers are attached (a file, Nominal Core, ...) receive every decoded packet,
-the link-health numbers, and reboot diagnoses.
+the link-health numbers, and diagnoses of reboots and silences.
 """
 
 import time
@@ -11,11 +11,11 @@ import time
 import serial
 from instro.lib import Instrument, Measurement
 
-from ingest.events import RebootDiagnoser
+from ingest.events import FaultDiagnoser
 from ingest.health import LinkHealth
 from ingest.parser import PacketParser
 
-LOOP_INTERVAL_S = 0.02  # read the port 50 times a second (about 2 packets each time)
+LOOP_INTERVAL_S = 0.05  # read the port 20 times a second (about 5 packets each time)
 SUPPLY_POLL_S = 0.05  # read the supply voltage 20 times a second
 HEALTH_PUBLISH_S = 0.25  # publish link health 4 times a second
 RECONNECT_S = 1.0  # after losing the serial port, try to reopen it this often
@@ -26,7 +26,7 @@ class SerialTelemetry(Instrument):
     def __init__(self, name, port_url, psu=None, baudrate=115200, **kwargs):
         """
         port_url: "socket://127.0.0.1:7000" for the simulated bench, or "COM3" for a real board.
-        psu:      an opened InstroPSU powering the board, used to explain reboots (optional).
+        psu:      an opened InstroPSU powering the board, used to explain faults (optional).
         """
         super().__init__(name, **kwargs)
         self._port_url = port_url
@@ -36,10 +36,12 @@ class SerialTelemetry(Instrument):
 
         self.parser = PacketParser()
         self.health = LinkHealth()
-        self.diagnoser = RebootDiagnoser()
+        self.diagnoser = FaultDiagnoser()
         self.latest = None  # most recent decoded sample
-        self.supply_volts = None  # most recent supply reading
-        self.events = []  # (wall-clock time, description): reboots, lost/restored connections
+        self.supply_volts = None  # most recent supply readings
+        self.supply_amps = None
+        self.events = []  # (wall-clock time, description): reboots, silences, lost/restored connections
+        self._was_silent = True  # silent before the first packet, but that's not a fault
 
         self._next_supply_poll = 0.0
         self._next_health_publish = 0.0
@@ -70,9 +72,14 @@ class SerialTelemetry(Instrument):
             for sample in samples:
                 reboot = self.health.update(sample, now)
                 if reboot:
-                    self._record_event(self.diagnoser.explain(now))
+                    self._record_event(self.diagnoser.explain_reboot(now))
             self.latest = samples[-1]
             self._publish_samples(samples)
+
+        silent = self.health.is_silent(now)
+        if silent and not self._was_silent:
+            self._record_event(self.diagnoser.explain_silence(now))
+        self._was_silent = silent
 
         if now >= self._next_health_publish:
             self._publish_health(now)
@@ -81,13 +88,15 @@ class SerialTelemetry(Instrument):
     def _read_supply(self, now):
         self._next_supply_poll = now + SUPPLY_POLL_S
         try:
-            self.supply_volts = self._psu.get_voltage(1).latest  # InstroPSU publishes this itself
+            # InstroPSU publishes both readings itself (psu.ch1.voltage, psu.ch1.current)
+            self.supply_volts = self._psu.get_voltage(1).latest
+            self.supply_amps = self._psu.get_current(1).latest
         except Exception as error:  # the supply went away (unplugged, powered off, crashed)
-            self._psu = None  # stop polling it; reboots can no longer be explained
-            self.supply_volts = None
+            self._psu = None  # stop polling it; faults can no longer be explained
+            self.supply_volts = self.supply_amps = None
             self._record_event(f"lost connection to the power supply ({type(error).__name__})")
             return
-        self.diagnoser.add_voltage(now, self.supply_volts)
+        self.diagnoser.add_reading(now, self.supply_volts, self.supply_amps)
 
     def _read_port(self, now):
         """Bytes waiting on the serial port. Survives the cable being unplugged and plugged back in."""
